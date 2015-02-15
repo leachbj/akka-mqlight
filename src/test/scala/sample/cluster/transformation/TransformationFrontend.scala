@@ -31,10 +31,11 @@ class TransformationFrontend extends Actor {
 object TransformationFrontend {
   def main(args: Array[String]): Unit = {
     // Override the configuration of the port when specified as program argument
-    val port = if (args.isEmpty) "0" else args(0)
-    val config = ConfigFactory.parseString(s"akka.remote.amqp.port=$port").
+    val clientName = if (args.isEmpty) """""""" else args(0)
+    val config = ConfigFactory.parseString(s"akka.remote.amqp.clientname=$clientName").
       withFallback(ConfigFactory.parseString("akka.cluster.roles = [frontend]")).
       withFallback(ConfigFactory.load())
+    println(s"""starting frontend with clientname ${config.getString("akka.remote.amqp.clientname")}""")
     val system = ActorSystem("ClusterSystem", config)
     val frontend = system.actorOf(Props[TransformationFrontend], name = "frontend")
     val counter = new AtomicInteger
