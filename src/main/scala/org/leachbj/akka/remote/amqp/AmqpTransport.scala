@@ -1,17 +1,32 @@
 package org.leachbj.akka.remote.amqp
 
+import java.io.IOException
+import java.lang
+import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 
 import akka.actor._
+import akka.io.Tcp.{CommandFailed, Connected}
+import akka.io.{IO, Tcp}
 import akka.remote.transport.AssociationHandle.{Disassociated, HandleEventListener, InboundPayload}
 import akka.remote.transport.Transport.{AssociationEventListener, InboundAssociation}
 import akka.remote.transport.{AssociationHandle, Transport}
-import akka.util.ByteString
+import akka.util.{Timeout, ByteString}
+import com.ibm.mqlight.api
 import com.ibm.mqlight.api._
+import com.ibm.mqlight.api.endpoint.Endpoint
+import com.ibm.mqlight.api.impl.callback.ThreadPoolCallbackService
+import com.ibm.mqlight.api.impl.endpoint.SingleEndpointService
+import com.ibm.mqlight.api.impl.network.NettyNetworkService
+import com.ibm.mqlight.api.impl.timer.TimerServiceImpl
+import com.ibm.mqlight.api.network.{NetworkChannel, NetworkListener, NetworkService}
 import com.typesafe.config.Config
+import org.leachbj.akka.remote.amqp.MqlightNetworkService.MqLightConnect
 
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Promise, _}
+import scala.util.Success
 
 
 class AmqpTransportSettings(config: Config) {
@@ -63,13 +78,27 @@ class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedAct
   override def shutdown(): Future[Boolean] = ???
 
   override def listen: Future[(Address, Promise[AssociationEventListener])] = {
+    import MqlightNetworkService._
+
     println(s"${settings.Clientname}: listen")
     val listenPromise = Promise[(Address, Promise[AssociationEventListener])]
 
     val clientOptions = ClientOptions.builder().setCredentials("admin", "password")
     settings.Clientname.foreach(clientOptions.setId(_))
 
-    client = NonBlockingClient.create("amqp://localhost:5672", clientOptions.build(),
+    val network = system.systemActorOf(Props[MqlightNetworkService], "amqp-transport-io")
+
+    client = NonBlockingClient.create(new SingleEndpointService("amqp://localhost:5672", "admin", "password"),
+      new ThreadPoolCallbackService(5),
+      new NetworkService() {
+        override def connect(endpoint: Endpoint, listener: NetworkListener, promise: api.Promise[NetworkChannel]): Unit = {
+          println(s"connect: ${endpoint.getHost}:${endpoint.getPort}")
+          network ! MqLightConnect(endpoint, listener, promise)
+        }
+      },
+      new TimerServiceImpl,
+      null,
+      clientOptions.build(),
       new NonBlockingClientListener[AmqpTransport] {
         override def onStarted(nonBlockingClient: NonBlockingClient, t: AmqpTransport): Unit = {
           localAddress = Address(schemeIdentifier, system.name, settings.Clientname.getOrElse(client.getId), 0)
@@ -109,6 +138,90 @@ class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedAct
 
     promise.future
   }
+}
+
+case class ActorNetworkChannel(actor: ActorRef) extends NetworkChannel {
+  import MqlightConnector._
+
+  var context: AnyRef = _
+
+  override def close(promise: api.Promise[Void]): Unit = {
+    actor ! MqlightClose(promise)
+  }
+  override def write(buffer: ByteBuffer, promise: api.Promise[lang.Boolean]): Unit = {
+    actor ! MqlightWrite(ByteString.fromByteBuffer(buffer), promise)
+  }
+  override def getContext: AnyRef = context
+  override def setContext(c: AnyRef): Unit = context = c
+}
+
+class MqlightConnector(endpoint: Endpoint, listener: NetworkListener, promise: api.Promise[NetworkChannel]) extends Actor with ActorLogging {
+  import MqlightConnector._
+
+  import context.system
+
+  override def preStart(): Unit = IO(Tcp) ! Tcp.Connect(new InetSocketAddress(endpoint.getHost, endpoint.getPort))
+
+  override def receive = {
+    case _: Connected =>
+      log.debug("connected to {}:{}", endpoint.getHost, endpoint.getPort)
+      val channel = ActorNetworkChannel(self)
+      promise.setSuccess(channel)
+      sender() ! Tcp.Register(self)
+      context.become(connected(channel, sender()))
+    case failed: CommandFailed =>
+      promise.setFailure(new IOException(s"Can't connect to ${failed.cmd.failureMessage}"))
+      context.stop(self)
+  }
+
+  def connected(channel: ActorNetworkChannel, connection: ActorRef): Receive = {
+    case Tcp.Received(buffer) =>
+      listener.onRead(channel, buffer.asByteBuffer)
+
+    case Tcp.PeerClosed | Tcp.ErrorClosed =>
+      listener.onClose(channel)
+
+    case MqlightClose(promise) =>
+      connection ! Tcp.Close
+      context.become(waitingForClose(promise))
+
+    case MqlightWrite(buffer, promise) =>
+      connection ! Tcp.Write(buffer, MqlightWriteAck(promise))
+
+    case MqlightWriteAck(promise) =>
+      promise.setSuccess(true)
+
+    case failed@Tcp.CommandFailed(Tcp.Write(buffer, MqlightWriteAck(promise))) =>
+      log.debug("write failed")
+      promise.setFailure(new RuntimeException(s"Can't write to ${failed.cmd.failureMessage}"))
+  }
+
+  def waitingForClose(promise: api.Promise[Void]): Receive = {
+    case Tcp.Closed =>
+      promise.setSuccess(None.orNull)
+      context.stop(self)
+  }
+}
+
+object MqlightConnector {
+  case class MqlightClose(promise: api.Promise[Void])
+  case class MqlightWrite(buffer: ByteString, promise: api.Promise[lang.Boolean])
+
+  case class MqlightWriteAck(promise: api.Promise[lang.Boolean]) extends Tcp.Event
+}
+
+class MqlightNetworkService extends Actor with ActorLogging {
+  import MqlightNetworkService._
+
+  override def receive = {
+    case MqLightConnect(endpoint, listener, promise) =>
+      log.debug("connecting to {}:{}", endpoint.getHost, endpoint.getPort)
+      context.actorOf(Props(classOf[MqlightConnector], endpoint, listener, promise))
+  }
+}
+
+object MqlightNetworkService {
+  case class MqLightConnect(endpoint: Endpoint, listener: NetworkListener, promise: api.Promise[NetworkChannel])
 }
 
 class ListenActor(client: NonBlockingClient, localAddr: Address, promise: Promise[(Address, Promise[AssociationEventListener])]) extends Actor with Stash with ActorLogging {
