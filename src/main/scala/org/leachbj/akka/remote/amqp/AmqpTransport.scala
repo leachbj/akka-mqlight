@@ -1,8 +1,8 @@
 package org.leachbj.akka.remote.amqp
 
-import java.net.{InetAddress, InetSocketAddress}
+import java.util.concurrent.TimeUnit
 
-import akka.actor.{Address, ExtendedActorSystem}
+import akka.actor._
 import akka.remote.transport.AssociationHandle.{Disassociated, HandleEventListener, InboundPayload}
 import akka.remote.transport.Transport.{AssociationEventListener, InboundAssociation}
 import akka.remote.transport.{AssociationHandle, Transport}
@@ -10,17 +10,19 @@ import akka.util.ByteString
 import com.ibm.mqlight.api._
 import com.typesafe.config.Config
 
+import scala.concurrent.duration.Duration
 import scala.concurrent.{Promise, _}
-import scala.util.Try
 
 
 class AmqpTransportSettings(config: Config) {
   import config._
 
-  val Clientname: Option[String] = getString("clientname") match {
+  val Clientname: Option[String] = getString("client-name") match {
     case ""    ⇒ None
     case value ⇒ Some(value)
   }
+
+  val ConnectRetry = Duration(getDuration("connect-retry", TimeUnit.MILLISECONDS), TimeUnit.MILLISECONDS)
 }
 
 class AmqpAssociationHandle(val localAddress: Address,
@@ -35,8 +37,10 @@ class AmqpAssociationHandle(val localAddress: Address,
   }
 
   override def write(payload: ByteString): Boolean = {
-    println(s"${localAddress.host} sending to ${topic}/write")
-    nonBlockingClient.send(s"$topic/write", payload.asByteBuffer, None.orNull)
+//    println(s"$topic/write ${payload.length}")
+    nonBlockingClient.getState
+    val writeReady = nonBlockingClient.send(s"$topic/write", payload.asByteBuffer, None.orNull)
+    if (!writeReady) println(s"$topic/write is full")
     true
   }
 }
@@ -51,65 +55,12 @@ class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedAct
 
   override def isResponsibleFor(address: Address): Boolean = true
 
-  private val associationListenerPromise: Promise[AssociationEventListener] = Promise()
-
   @volatile private var client: NonBlockingClient = _
   @volatile private var localAddress: Address = _
 
-  def connectionListener(association: AssociationEventListener) = new DestinationAdapter[Any] {
-    override def onMessage(nonBlockingClient: NonBlockingClient, t: Any, delivery: Delivery): Unit = {
-      val topic = delivery.getTopic.substring(0, delivery.getTopic.lastIndexOf('/'))    // strip of the /connect
-      val remoteIndex = topic.lastIndexOf('/')  // after last / is the remote name
-      val hn = """(.*)@(.*)""".r
+  def addressName(address: Address) = s"${address.system}@${address.host.get}"
 
-      val remoteClient = topic.substring(remoteIndex + 1)
-
-      println(s"""${settings.Clientname} connection request on topic ${delivery.getTopic} from client $remoteClient""")
-      val hn(systemname, remote) = remoteClient
-
-      println(s"${settings.Clientname} received connection request from system: $systemname remote: $remote")
-
-      val remoteAddr = Address(schemeIdentifier, systemname, remote, 0)
-
-      val remoteTopic = s"${addressName(remoteAddr)}/${addressName(localAddress)}"
-
-      val handle = new AmqpAssociationHandle(localAddress, remoteAddr, nonBlockingClient, s"${remoteTopic}/client")
-      handle.readHandlerPromise.future.onSuccess {
-        case listener: HandleEventListener =>
-          val localTopic = s"${addressName(localAddress)}/${addressName(remoteAddr)}"
-
-          println(s"${settings.Clientname} inbound connection system: $systemname remote: $remote subscribing to ${localTopic}/server/+")
-          try {
-            nonBlockingClient.subscribe(s"${localTopic}/server/+", messageListener(listener), None.orNull, None.orNull)
-          } catch {
-            case e: StateException =>
-              println(s"${settings.Clientname} already subscribed to ${topic}/+")
-          }
-      }
-      association.notify(InboundAssociation(handle))
-    }
-  }
-
-  def messageListener(listener: HandleEventListener) = new DestinationAdapter[Any] {
-    override def onMessage(nonBlockingClient: NonBlockingClient, t: Any, delivery: Delivery): Unit = {
-      delivery match {
-        case bytes: BytesDelivery =>
-          println(s"${settings.Clientname} data received on ${delivery.getTopic}")
-          listener.notify(InboundPayload(ByteString.fromByteBuffer(bytes.getData)))
-        case string: StringDelivery =>
-          println(s"${settings.Clientname} string '${string.getData}' received on ${delivery.getTopic}")
-          string.getData match {
-            case "disassociate" =>
-              listener.notify(Disassociated(AssociationHandle.Shutdown))
-            case _ =>
-              println(s"${settings.Clientname} unknown command topic ${delivery.getTopic}")
-          }
-
-        case msg: Any =>
-          println(s"whats this $msg")
-      }
-    }
-  }
+  override def shutdown(): Future[Boolean] = ???
 
   override def listen: Future[(Address, Promise[AssociationEventListener])] = {
     println(s"${settings.Clientname}: listen")
@@ -123,14 +74,7 @@ class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedAct
         override def onStarted(nonBlockingClient: NonBlockingClient, t: AmqpTransport): Unit = {
           localAddress = Address(schemeIdentifier, system.name, settings.Clientname.getOrElse(client.getId), 0)
 
-          associationListenerPromise.future.onSuccess {
-            case eventListener =>
-              val topic = addressName(localAddress)
-              println(s"${settings.Clientname} listening on subscription ${topic}/+/connect")
-              nonBlockingClient.subscribe(s"${topic}/+/connect", connectionListener(eventListener), None.orNull, None.orNull)
-          }
-
-          listenPromise.success((localAddress, associationListenerPromise))
+          system.systemActorOf(ListenActor.props(client, localAddress, listenPromise), s"amqp-transport-listen")
         }
 
         override def onRetrying(nonBlockingClient: NonBlockingClient, t: AmqpTransport, e: ClientException): Unit = {
@@ -145,54 +89,295 @@ class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedAct
           e.printStackTrace()
         }
 
-        override def onDrain(nonBlockingClient: NonBlockingClient, t: AmqpTransport): Unit = println("draining")
+        override def onDrain(nonBlockingClient: NonBlockingClient, t: AmqpTransport): Unit = {
+          println(s"${settings.Clientname}: draining")
+          try {
+            throw new RuntimeException()
+          } catch {
+            case e: RuntimeException => e.printStackTrace()
+          }
+        }
       }, this)
 
     listenPromise.future
   }
 
-  def addressName(address: Address) = s"${address.system}@${address.host.get}"
-
-  override def shutdown(): Future[Boolean] = ???
-
-  override def associate(remoteAddress: Address): Future[AssociationHandle] = {
-    val remoteTopic = s"${addressName(remoteAddress)}/${addressName(localAddress)}"
-    println(s"${settings.Clientname} associating with topic ${remoteTopic}")
-
-    val handle = new AmqpAssociationHandle(localAddress, remoteAddress, client, s"${remoteTopic}/server")
-    handle.readHandlerPromise.future.onSuccess {
-      case listener: HandleEventListener =>
-
-        val localTopic = s"${addressName(localAddress)}/${addressName(remoteAddress)}"
-        println(s"${settings.Clientname} associate read handle ready on subscribing to $localTopic/client/+")
-
-        client.subscribe(s"$localTopic/client/+", messageListener(listener), new CompletionListener[Any] {
-          override def onSuccess(nonBlockingClient: NonBlockingClient, t: Any): Unit = {
-          }
-
-          override def onError(nonBlockingClient: NonBlockingClient, t: Any, e: Exception): Unit = {
-            e.printStackTrace()
-          }
-        }, None.orNull)
-    }
-
+  override def associate(remoteAddr: Address): Future[AssociationHandle] = {
     val promise = Promise[AssociationHandle]
 
-    client.send(s"$remoteTopic/connect", "", None.orNull, new CompletionListener[Any] {
-      override def onSuccess(nonBlockingClient: NonBlockingClient, t: Any): Unit = {
-        import scala.concurrent.duration._
-        system.scheduler.scheduleOnce(1 second,
-          new Runnable() {
-            def run() = {
-              promise.success(handle)
-            }
-          })
-      }
-
-      override def onError(nonBlockingClient: NonBlockingClient, t: Any, e: Exception): Unit = promise.failure(e)
-    }, None.orNull)
+    system.systemActorOf(ClientConnectionActor.props(client, localAddress, remoteAddr, promise), s"amqp-transport-client-${remoteAddr.host.get}")
 
     promise.future
   }
+}
 
+class ListenActor(client: NonBlockingClient, localAddr: Address, promise: Promise[(Address, Promise[AssociationEventListener])]) extends Actor with Stash with ActorLogging {
+  import context.dispatcher
+  import org.leachbj.akka.remote.amqp.ActorCompletionListener._
+  import org.leachbj.akka.remote.amqp.ActorDestinationListener._
+  import org.leachbj.akka.remote.amqp.ListenActor._
+
+  val localTopic = addressName(localAddr)
+
+  override def preStart(): Unit = {
+    log.debug("{} subscribing to listen address", localAddr)
+    client.subscribe(s"${localTopic}/+/connect", ActorDestinationListener, ActorCompletionListener, self)
+  }
+
+  override def receive: Receive = awaitSubscribe
+
+  def awaitSubscribe: Receive = {
+    case CompletionSuccess =>
+      log.debug("{} subscribed", localAddr)
+      val associationListenerPromise: Promise[AssociationEventListener] = Promise()
+      associationListenerPromise.future.onSuccess {
+        case eventListener =>
+          self ! ListenAssociated(eventListener)
+      }
+
+      promise.success((localAddr, associationListenerPromise))
+      context.become(awaitAssociation)
+    case CompletionError(e) =>
+      log.error(e, "{} subscription failed", localAddr)
+      throw e
+  }
+
+  def awaitAssociation: Receive = {
+    case ListenAssociated(listener) =>
+      log.debug("{} listen associated", localAddr)
+      unstashAll()
+      context.become(associated(listener))
+    case _: Message =>
+      log.debug("{} message received before associated", localAddr)
+      stash()
+    case Malformed(delivery: MalformedDelivery) =>
+      log.debug("{} malformed message received before associated", localAddr)
+    case Unsubscribed(topicPattern, share, error) =>
+      log.error(error, "{} unsubscribed from {}", localAddr, topicPattern)
+      throw error
+  }
+
+  def associated(eventListener: AssociationEventListener): Receive = {
+    case Message(delivery: StringDelivery) if delivery.getData == "connect" =>
+      log.debug("{} connect received on topic {}", localAddr, delivery.getTopic)
+      val (remotesystem, remoteclient) = parseTopic(delivery.getTopic)
+      val remoteAddr = Address("amqp", remotesystem, remoteclient, 0)
+
+      log.debug("{} connect request {}", localAddr, remoteAddr)
+
+      context.system.asInstanceOf[ExtendedActorSystem].systemActorOf(ServerConnectionActor.props(client, localAddr, remoteAddr, eventListener), s"amqp-transport-server-${remoteAddr.host.get}")
+
+  }
+
+  def parseTopic(deliveryTopic: String) = {
+//    val topic = deliveryTopic.substring(0, deliveryTopic.lastIndexOf('/'))    // strip of the /connect
+//    val remoteIndex = topic.lastIndexOf('/')                                  // after last / is the remote name
+//    val remoteClient = topic.substring(remoteIndex + 1)
+//    val hn(remotesystem, remoteclient) = remoteClient
+
+    // topic format is <local systemname/local client>@<remote systemname>/<remote client>/connect
+    val hn(localsystem, localclient, remotesystem, remoteclient) = deliveryTopic
+    (remotesystem, remoteclient)
+  }
+
+  val hn = """(.*)@(.*)/(.*)@(.*)/connect""".r
+}
+
+object ListenActor {
+  def props(client: NonBlockingClient, localAddr: Address, promise: Promise[(Address, Promise[AssociationEventListener])]) = Props(classOf[ListenActor], client, localAddr, promise)
+
+  def addressName(address: Address) = s"${address.system}@${address.host.get}"
+
+  case class ListenAssociated(eventListener: AssociationEventListener)
+}
+
+class ServerConnectionActor(client: NonBlockingClient, localAddr: Address, remoteAddr: Address, eventListener: AssociationEventListener) extends Actor with Stash with ActorLogging {
+  import context.dispatcher
+  import org.leachbj.akka.remote.amqp.ActorCompletionListener._
+  import org.leachbj.akka.remote.amqp.ActorDestinationListener._
+  import org.leachbj.akka.remote.amqp.ServerConnectionActor._
+
+
+
+  val localTopic = s"${addressName(localAddr)}/${addressName(remoteAddr)}"
+  val remoteTopic = s"${addressName(remoteAddr)}/${addressName(localAddr)}"
+
+  override def preStart(): Unit = {
+    client.subscribe(s"${localTopic}/server/+", ActorDestinationListener, ActorCompletionListener, self)
+  }
+
+  override def receive: Receive = waitForSubscribed
+
+  def waitForSubscribed: Receive = {
+    case CompletionSuccess =>
+      sendSynAck()
+
+      val handle = new AmqpAssociationHandle(localAddr, remoteAddr, client, s"${remoteTopic}/client")
+      eventListener.notify(InboundAssociation(handle))
+
+      handle.readHandlerPromise.future.onSuccess {
+        case listener: HandleEventListener =>
+          self ! ListenAssociated(listener)
+      }
+
+      context.become(awaitAssociation)
+    case CompletionError(e) =>
+      throw e
+  }
+
+  def awaitAssociation: Receive = {
+    case ListenAssociated(listener) =>
+      log.debug("{} listen associated", localAddr)
+      unstashAll()
+      context.become(associated(listener))
+    case _: Message =>
+      log.debug("{} message received before associated", localAddr)
+      stash()
+    case Malformed(delivery: MalformedDelivery) =>
+      log.debug("{} malformed message received before associated", localAddr)
+    case Unsubscribed(topicPattern, share, error) =>
+      log.error(error, "{} unsubscribed from {}", localAddr, topicPattern)
+      throw error
+  }
+
+
+  def associated(listener: HandleEventListener): Receive = {
+    case Message(bytes: BytesDelivery) =>
+      listener.notify(InboundPayload(ByteString.fromByteBuffer(bytes.getData)))
+    case Message(delivery: StringDelivery) if delivery.getData == "disassociate" =>
+      client.unsubscribe(s"$localTopic/client/+", ActorCompletionListener, self)
+      listener.notify(Disassociated(AssociationHandle.Shutdown))
+      context.become(disconnecting)
+  }
+
+  def disconnecting: Receive = {
+    case CompletionSuccess =>
+      log.debug("{} unsubscribed from {}", localAddr, remoteAddr)
+      context.stop(self)
+    case CompletionError(e) =>
+      log.error(e, "{} disconnect/unsubscribe from {} error", localAddr, remoteAddr)
+      context.stop(self)
+  }
+
+  def sendSynAck() = {
+    log.debug("{} sending synack to {}", localAddr, remoteAddr)
+    val writeReady = client.send(s"${remoteTopic}/client/synack", "synack", None.orNull)
+    if (!writeReady) println(s"${remoteTopic}/client/synack is full")
+  }
+}
+
+object ServerConnectionActor {
+  def props(client: NonBlockingClient, localAddr: Address, remoteAddr: Address, eventListener: AssociationEventListener) = Props(classOf[ServerConnectionActor], client, localAddr, remoteAddr, eventListener)
+
+  def addressName(address: Address) = s"${address.system}@${address.host.get}"
+
+  case class ListenAssociated(listener: HandleEventListener)
+
+}
+
+class ClientConnectionActor(client: NonBlockingClient, localAddr: Address, remoteAddr: Address, promise: Promise[AssociationHandle]) extends Actor with ActorLogging {
+  import context.dispatcher
+  import org.leachbj.akka.remote.amqp.ActorCompletionListener._
+  import org.leachbj.akka.remote.amqp.ActorDestinationListener._
+  import org.leachbj.akka.remote.amqp.ClientConnectionActor._
+
+  val localTopic = s"${addressName(localAddr)}/${addressName(remoteAddr)}"
+  val remoteTopic = s"${addressName(remoteAddr)}/${addressName(localAddr)}"
+
+  val settings = new AmqpTransportSettings(context.system.settings.config.getConfig("akka.remote.amqp"))
+
+  override def preStart(): Unit =
+    client.subscribe(s"$localTopic/client/+", ActorDestinationListener, ActorCompletionListener, self)
+
+  override def receive: Receive = waitForSubscribed
+
+  def waitForSubscribed: Receive = {
+    case CompletionSuccess =>
+      sendConnect()
+      val retry = context.system.scheduler.schedule(settings.ConnectRetry, settings.ConnectRetry, self, RetryConnect)
+      context.become(unconnected(retry))
+    case CompletionError(e) =>
+      throw e
+  }
+
+  def unconnected(retry: Cancellable): Receive = {
+    case Message(delivery: StringDelivery) if delivery.getData == "synack" =>
+      retry.cancel()
+      log.debug("{} received synack from {}", localAddr, remoteAddr)
+
+      val handle = new AmqpAssociationHandle(localAddr, remoteAddr, client, s"${remoteTopic}/server")
+      handle.readHandlerPromise.future.onSuccess {
+        case listener: HandleEventListener =>
+          self ! ReadHandleSuccess(listener)
+      }
+
+      promise.success(handle)
+      context.become(waitForReader)
+    case RetryConnect =>
+      log.debug("{} retry connect to {}", localAddr, remoteAddr)
+      sendConnect()
+  }
+
+  def waitForReader: Receive = {
+    case ReadHandleSuccess(listener) =>
+      log.debug("{} read handle ready {}", localAddr, remoteAddr)
+      context.become(connected(listener))
+  }
+
+  def connected(listener: HandleEventListener): Receive = {
+    case Message(bytes: BytesDelivery) =>
+      listener.notify(InboundPayload(ByteString.fromByteBuffer(bytes.getData)))
+    case Message(delivery: StringDelivery) if delivery.getData == "disassociate" =>
+      client.unsubscribe(s"$localTopic/client/+", ActorCompletionListener, self)
+      listener.notify(Disassociated(AssociationHandle.Shutdown))
+      context.become(disconnecting)
+  }
+
+  def disconnecting: Receive = {
+    case CompletionSuccess =>
+      log.debug("{} unsubscribed from {}", localAddr, remoteAddr)
+      context.stop(self)
+    case CompletionError(e) =>
+      log.error(e, "{} disconnect/unsubscribe from {} error", localAddr, remoteAddr)
+      context.stop(self)
+  }
+
+  private[this] def sendConnect() = {
+    log.debug("{} sending connect request to {}", localAddr, remoteAddr)
+    val writeReady = client.send(s"$remoteTopic/connect", "connect", None.orNull)
+    if (!writeReady) println(s"${remoteTopic}/connect is full")
+  }
+}
+
+object ClientConnectionActor {
+  def props(client: NonBlockingClient, localAddr: Address, remoteAddr: Address, promise: Promise[AssociationHandle]) =
+    Props(classOf[ClientConnectionActor], client, localAddr, remoteAddr, promise)
+
+  def addressName(address: Address) = s"${address.system}@${address.host.get}"
+
+  case object RetryConnect
+  case class ReadHandleSuccess(listener: HandleEventListener)
+}
+
+object ActorDestinationListener extends DestinationListener[ActorRef] {
+  override def onMessage(client: NonBlockingClient, context: ActorRef, delivery: Delivery): Unit = context ! Message(delivery)
+
+  override def onMalformed(client: NonBlockingClient, context: ActorRef, delivery: MalformedDelivery): Unit = Malformed(delivery)
+
+  override def onUnsubscribed(client: NonBlockingClient, context: ActorRef, topicPattern: String, share: String, error: Exception): Unit = Unsubscribed(topicPattern, share, error)
+
+  sealed trait DestinationEvent
+  case class Message(delivery: Delivery) extends DestinationEvent
+  case class Malformed(delivery: MalformedDelivery) extends DestinationEvent
+  case class Unsubscribed(topicPattern: String, share: String, error: Exception) extends DestinationEvent
+}
+
+object ActorCompletionListener extends CompletionListener[ActorRef] {
+  override def onSuccess(client: NonBlockingClient, context: ActorRef): Unit = context ! CompletionSuccess
+
+  override def onError(client: NonBlockingClient, context: ActorRef, exception: Exception): Unit = context ! CompletionError(exception)
+
+  sealed trait CompletionEvent
+  case object CompletionSuccess extends CompletionEvent
+  case class CompletionError(exception: Exception) extends CompletionEvent
 }
