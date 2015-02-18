@@ -4,8 +4,7 @@ import java.io.IOException
 import java.lang
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.{Semaphore, TimeUnit}
 
 import akka.actor._
 import akka.io.Tcp.{CommandFailed, Connected}
@@ -23,6 +22,7 @@ import com.ibm.mqlight.api.impl.network.NettyNetworkService
 import com.ibm.mqlight.api.impl.timer.TimerServiceImpl
 import com.ibm.mqlight.api.network.{NetworkChannel, NetworkListener, NetworkService}
 import com.typesafe.config.Config
+import org.leachbj.akka.remote.amqp.ActorCompletionListener.{CompletionError, CompletionSuccess}
 import org.leachbj.akka.remote.amqp.MqlightNetworkService.MqLightConnect
 
 import scala.concurrent.duration.Duration
@@ -46,7 +46,7 @@ class AmqpTransportSettings(config: Config) {
 class AmqpAssociationHandle(val localAddress: Address,
                              val remoteAddress: Address,
                              private val nonBlockingClient: ActorRef,
-                             private val writeable: AtomicBoolean,
+                             private val writeable: Semaphore,
                              private val topic: String) extends AssociationHandle {
   import MqLightClient._
 
@@ -58,10 +58,12 @@ class AmqpAssociationHandle(val localAddress: Address,
   }
 
   override def write(payload: ByteString): Boolean = {
-    if (writeable.get) {
+//    println(s"$this $writeable")
+    if (writeable.tryAcquire(1)) {
       nonBlockingClient ! MqLightSendBytes(s"$topic/write", payload)
       true
     } else {
+      println(s"$this failed write")
       false
     }
   }
@@ -79,7 +81,7 @@ class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedAct
 
   @volatile private var client: ActorRef = _
   @volatile private var localAddress: Address = _
-  @volatile private var writeable: AtomicBoolean = _
+  @volatile private var writeable: Semaphore = _
 
   def addressName(address: Address) = s"${address.system}@${address.host.get}"
 
@@ -121,7 +123,7 @@ class MqLightClient extends Actor with ActorLogging with Stash {
 
   val network = createSystemActor(Props[MqlightNetworkService], "amqp-transport-io")
 
-  val writeable = new AtomicBoolean(true)
+  val writeable = new Semaphore(3)
 
   override def receive: Receive = unconnected
 
@@ -148,20 +150,26 @@ class MqLightClient extends Actor with ActorLogging with Stash {
       val writeReady = client.send(topic, body, None.orNull)
       if (!writeReady) context.become(waitingForDrain(client))
     case MqLightSendBytes(topic, body) =>
-      val writeReady = client.send(topic, body.asByteBuffer, None.orNull)
+      val writeReady = client.send(topic, body.asByteBuffer, None.orNull, ActorCompletionListener, self)
       if (!writeReady) {
-        log.warning("{} Full", this)
-        writeable.set(false)
+//        log.warning("{} Full", this)
+//        writeable.drainPermits()
         context.become(waitingForDrain(client))
       }
+    case CompletionSuccess | _: CompletionError =>
+      writeable.release(1)
+//      log.warning("{}", writeable.toString)
   }
 
   def waitingForDrain(client: NonBlockingClient): Receive = {
     case Drain =>
       log.warning("{} Drained", this)
-      writeable.set(true)
+//      writeable.set(2)
       unstashAll()
       context.become(started(client))
+    case CompletionSuccess | _: CompletionError =>
+      writeable.release(1)
+//      log.warning("{}", writeable.toString)
     case any: Any =>
       log.warning("{} Client draining; stashing {}", this, any)
       stash()
@@ -214,7 +222,7 @@ object MqLightClient {
 
   sealed trait MqLightCommands
   case class MqLightStart(clientId: Option[String], url: String, username: String, password: String)
-  case class MqLightStarted(clientId: String, writeable: AtomicBoolean)
+  case class MqLightStarted(clientId: String, writeable: Semaphore)
   case class MqLightSubscribe(topic: String)
   case class MqLightUnSubscribe(topic: String)
   case class MqLightSendString(topic: String, body: String)
@@ -304,7 +312,7 @@ object MqlightNetworkService {
   case class MqLightConnect(endpoint: Endpoint, listener: NetworkListener, promise: api.Promise[NetworkChannel])
 }
 
-class ListenActor(client: ActorRef, writeable: AtomicBoolean, localAddr: Address, promise: Promise[(Address, Promise[AssociationEventListener])]) extends Actor with Stash with ActorLogging {
+class ListenActor(client: ActorRef, writeable: Semaphore, localAddr: Address, promise: Promise[(Address, Promise[AssociationEventListener])]) extends Actor with Stash with ActorLogging {
   import context.dispatcher
   import org.leachbj.akka.remote.amqp.ActorCompletionListener._
   import org.leachbj.akka.remote.amqp.ActorDestinationListener._
@@ -378,14 +386,14 @@ class ListenActor(client: ActorRef, writeable: AtomicBoolean, localAddr: Address
 }
 
 object ListenActor {
-  def props(client: ActorRef, writeable: AtomicBoolean, localAddr: Address, promise: Promise[(Address, Promise[AssociationEventListener])]) = Props(classOf[ListenActor], client, writeable, localAddr, promise)
+  def props(client: ActorRef, writeable: Semaphore, localAddr: Address, promise: Promise[(Address, Promise[AssociationEventListener])]) = Props(classOf[ListenActor], client, writeable, localAddr, promise)
 
   def addressName(address: Address) = s"${address.system}@${address.host.get}"
 
   case class ListenAssociated(eventListener: AssociationEventListener)
 }
 
-class ServerConnectionActor(client: ActorRef, writeable: AtomicBoolean, localAddr: Address, remoteAddr: Address, eventListener: AssociationEventListener) extends Actor with Stash with ActorLogging {
+class ServerConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: Address, remoteAddr: Address, eventListener: AssociationEventListener) extends Actor with Stash with ActorLogging {
   import context.dispatcher
   import org.leachbj.akka.remote.amqp.ActorCompletionListener._
   import org.leachbj.akka.remote.amqp.ActorDestinationListener._
@@ -456,7 +464,7 @@ class ServerConnectionActor(client: ActorRef, writeable: AtomicBoolean, localAdd
 }
 
 object ServerConnectionActor {
-  def props(client: ActorRef, writeable: AtomicBoolean, localAddr: Address, remoteAddr: Address, eventListener: AssociationEventListener) = Props(classOf[ServerConnectionActor], client, writeable, localAddr, remoteAddr, eventListener)
+  def props(client: ActorRef, writeable: Semaphore, localAddr: Address, remoteAddr: Address, eventListener: AssociationEventListener) = Props(classOf[ServerConnectionActor], client, writeable, localAddr, remoteAddr, eventListener)
 
   def addressName(address: Address) = s"${address.system}@${address.host.get}"
 
@@ -464,7 +472,7 @@ object ServerConnectionActor {
 
 }
 
-class ClientConnectionActor(client: ActorRef, writeable: AtomicBoolean, localAddr: Address, remoteAddr: Address, promise: Promise[AssociationHandle]) extends Actor with ActorLogging {
+class ClientConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: Address, remoteAddr: Address, promise: Promise[AssociationHandle]) extends Actor with ActorLogging {
   import context.dispatcher
   import org.leachbj.akka.remote.amqp.ActorCompletionListener._
   import org.leachbj.akka.remote.amqp.ActorDestinationListener._
@@ -538,7 +546,7 @@ class ClientConnectionActor(client: ActorRef, writeable: AtomicBoolean, localAdd
 }
 
 object ClientConnectionActor {
-  def props(client: ActorRef, writeable: AtomicBoolean, localAddr: Address, remoteAddr: Address, promise: Promise[AssociationHandle]) =
+  def props(client: ActorRef, writeable: Semaphore, localAddr: Address, remoteAddr: Address, promise: Promise[AssociationHandle]) =
     Props(classOf[ClientConnectionActor], client, writeable, localAddr, remoteAddr, promise)
 
   def addressName(address: Address) = s"${address.system}@${address.host.get}"
