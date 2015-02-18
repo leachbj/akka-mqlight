@@ -90,7 +90,7 @@ class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedAct
     client = system.systemActorOf(MqLightClient.props(), "amqp-mqlight-client")
     client ? MqLightStart(settings.Clientname, "amqp://localhost:5672", "admin", "password") onComplete {
       case Success(MqLightStarted(clientId)) =>
-        localAddress = Address(schemeIdentifier, system.name, clientId, 0)
+        localAddress = Address(schemeIdentifier, system.name, clientId.replaceAll("_", "-"), 0)
         system.systemActorOf(ListenActor.props(client, localAddress, listenPromise), s"amqp-transport-listen")
       case Success(_) => listenPromise.failure(new RuntimeException("Unexpected response from mqlight client"))
       case Failure(e) => listenPromise.failure(e)

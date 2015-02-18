@@ -11,6 +11,6 @@ object TransformationApp {
     TransformationBackend.main(Array.empty)
     TransformationBackend.main(Array.empty)
     TransformationBackend.main(Array.empty)
-//    TransformationFrontend.main(Array.empty)
+    TransformationFrontend.main(Array.empty)
   }
 }
