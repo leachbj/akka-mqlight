@@ -18,7 +18,6 @@ import com.ibm.mqlight.api._
 import com.ibm.mqlight.api.endpoint.Endpoint
 import com.ibm.mqlight.api.impl.callback.ThreadPoolCallbackService
 import com.ibm.mqlight.api.impl.endpoint.SingleEndpointService
-import com.ibm.mqlight.api.impl.network.NettyNetworkService
 import com.ibm.mqlight.api.impl.timer.TimerServiceImpl
 import com.ibm.mqlight.api.network.{NetworkChannel, NetworkListener, NetworkService}
 import com.typesafe.config.Config
@@ -47,14 +46,14 @@ class AmqpAssociationHandle(val localAddress: Address,
                              val remoteAddress: Address,
                              private val nonBlockingClient: ActorRef,
                              private val writeable: Semaphore,
-                             private val topic: String) extends AssociationHandle {
+                             private val topic: String,
+                             private val actor: ActorRef) extends AssociationHandle {
   import MqLightClient._
 
   override val readHandlerPromise: Promise[HandleEventListener] = Promise()
 
   override def disassociate(): Unit = {
-    println(s"${localAddress.host} disassociate")
-    nonBlockingClient ! MqLightSendString(s"$topic/disassociate", "disassociate")
+    actor ! Disassociate
   }
 
   override def write(payload: ByteString): Boolean = {
@@ -68,6 +67,8 @@ class AmqpAssociationHandle(val localAddress: Address,
     }
   }
 }
+
+case object Disassociate
 
 class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedActorSystem) extends Transport {
   def this(system: ExtendedActorSystem, conf: Config) = this(new AmqpTransportSettings(conf), system)
@@ -399,6 +400,7 @@ class ServerConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
   import org.leachbj.akka.remote.amqp.ActorDestinationListener._
   import org.leachbj.akka.remote.amqp.ServerConnectionActor._
   import MqLightClient._
+  import scala.concurrent.duration._
 
   val localTopic = s"${addressName(localAddr)}/${addressName(remoteAddr)}"
   val remoteTopic = s"${addressName(remoteAddr)}/${addressName(localAddr)}"
@@ -411,7 +413,7 @@ class ServerConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
     case CompletionSuccess =>
       sendSynAck()
 
-      val handle = new AmqpAssociationHandle(localAddr, remoteAddr, client, writeable, s"${remoteTopic}/client")
+      val handle = new AmqpAssociationHandle(localAddr, remoteAddr, client, writeable, s"${remoteTopic}/client", self)
       eventListener.notify(InboundAssociation(handle))
 
       handle.readHandlerPromise.future.onSuccess {
@@ -443,18 +445,37 @@ class ServerConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
     case Message(bytes: BytesDelivery) =>
       listener.notify(InboundPayload(ByteString.fromByteBuffer(bytes.getData)))
     case Message(delivery: StringDelivery) if delivery.getData == "disassociate" =>
-      client ! MqLightUnSubscribe(s"$localTopic/client/+")
       listener.notify(Disassociated(AssociationHandle.Shutdown))
+      context.become(disconnecting)
+    case Disassociate =>
+      log.debug("{} disassociate", localAddr)
+      client ! MqLightSendString(s"$remoteTopic/client/disassociate", "disassociate")
+      val timeout = context.system.scheduler.scheduleOnce(500 milliseconds, self, DisconnectTimeout)
+      context.become(startedDisconnecting(timeout))
+  }
+
+  def startedDisconnecting(timeout: Cancellable): Receive = {
+    case CompletionSuccess =>
+    case CompletionError(e) =>
+    case Message(delivery: StringDelivery) if delivery.getData == "disassociate" =>
+      timeout.cancel()
+      context.become(disconnecting)
+    case DisconnectTimeout =>
+      log.debug("{} timedout out waiting for disconnect", localAddr)
       context.become(disconnecting)
   }
 
   def disconnecting: Receive = {
-    case CompletionSuccess =>
-      log.debug("{} unsubscribed from {}", localAddr, remoteAddr)
-      context.stop(self)
-    case CompletionError(e) =>
-      log.error(e, "{} disconnect/unsubscribe from {} error", localAddr, remoteAddr)
-      context.stop(self)
+    client ! MqLightUnSubscribe(s"$localTopic/server/+")
+
+    {
+      case CompletionSuccess =>
+        log.debug("{} unsubscribed from {}", localAddr, remoteAddr)
+        context.stop(self)
+      case CompletionError(e) =>
+        log.error(e, "{} disconnect/unsubscribe from {} error", localAddr, remoteAddr)
+        context.stop(self)
+    }
   }
 
   def sendSynAck() = {
@@ -469,6 +490,7 @@ object ServerConnectionActor {
   def addressName(address: Address) = s"${address.system}@${address.host.get}"
 
   case class ListenAssociated(listener: HandleEventListener)
+  case object DisconnectTimeout
 
 }
 
@@ -478,6 +500,7 @@ class ClientConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
   import org.leachbj.akka.remote.amqp.ActorDestinationListener._
   import org.leachbj.akka.remote.amqp.ClientConnectionActor._
   import MqLightClient._
+  import scala.concurrent.duration._
 
   val localTopic = s"${addressName(localAddr)}/${addressName(remoteAddr)}"
   val remoteTopic = s"${addressName(remoteAddr)}/${addressName(localAddr)}"
@@ -502,7 +525,7 @@ class ClientConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
       retry.cancel()
       log.debug("{} received synack from {}", localAddr, remoteAddr)
 
-      val handle = new AmqpAssociationHandle(localAddr, remoteAddr, client, writeable, s"${remoteTopic}/server")
+      val handle = new AmqpAssociationHandle(localAddr, remoteAddr, client, writeable, s"${remoteTopic}/server", self)
       handle.readHandlerPromise.future.onSuccess {
         case listener: HandleEventListener =>
           self ! ReadHandleSuccess(listener)
@@ -525,18 +548,37 @@ class ClientConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
     case Message(bytes: BytesDelivery) =>
       listener.notify(InboundPayload(ByteString.fromByteBuffer(bytes.getData)))
     case Message(delivery: StringDelivery) if delivery.getData == "disassociate" =>
-      client ! MqLightUnSubscribe(s"$localTopic/client/+")
       listener.notify(Disassociated(AssociationHandle.Shutdown))
+      context.become(disconnecting)
+    case Disassociate =>
+      log.debug("{} disassociate", localAddr)
+      client ! MqLightSendString(s"$remoteTopic/client/disassociate", "disassociate")
+      val timeout = context.system.scheduler.scheduleOnce(500 milliseconds, self, DisconnectTimeout)
+      context.become(startedDisconnecting(timeout))
+  }
+
+  def startedDisconnecting(timeout: Cancellable): Receive = {
+    case CompletionSuccess =>
+    case CompletionError(e) =>
+    case Message(delivery: StringDelivery) if delivery.getData == "disassociate" =>
+      timeout.cancel()
+      context.become(disconnecting)
+    case DisconnectTimeout =>
+      log.debug("{} timed out out waiting for disconnect", localAddr)
       context.become(disconnecting)
   }
 
   def disconnecting: Receive = {
-    case CompletionSuccess =>
-      log.debug("{} unsubscribed from {}", localAddr, remoteAddr)
-      context.stop(self)
-    case CompletionError(e) =>
-      log.error(e, "{} disconnect/unsubscribe from {} error", localAddr, remoteAddr)
-      context.stop(self)
+    client ! MqLightUnSubscribe(s"$localTopic/client/+")
+
+    {
+      case CompletionSuccess =>
+        log.debug("{} unsubscribed from {}", localAddr, remoteAddr)
+        context.stop(self)
+      case CompletionError(e) =>
+        log.error(e, "{} disconnect/unsubscribe from {} error", localAddr, remoteAddr)
+        context.stop(self)
+    }
   }
 
   private[this] def sendConnect() = {
@@ -553,6 +595,7 @@ object ClientConnectionActor {
 
   case object RetryConnect
   case class ReadHandleSuccess(listener: HandleEventListener)
+  case object DisconnectTimeout
 }
 
 object ActorDestinationListener extends DestinationListener[ActorRef] {

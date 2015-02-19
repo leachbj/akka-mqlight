@@ -31,7 +31,7 @@
 			<dependency>
 				<groupId>com.ibm.mqlight.api</groupId>
 				<artifactId>mqlight-api</artifactId>
-				<version>1.0-2015021800</version>
+				<version>1.0-2015021900</version>
 				<exclusions>
 					<exclusion>
 						<artifactId>logback-classic</artifactId>
