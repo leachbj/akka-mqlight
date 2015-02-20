@@ -12,7 +12,7 @@ import akka.io.{IO, Tcp}
 import akka.remote.transport.AssociationHandle.{Disassociated, HandleEventListener, InboundPayload}
 import akka.remote.transport.Transport.{AssociationEventListener, InboundAssociation}
 import akka.remote.transport.{AssociationHandle, Transport}
-import akka.util.{Timeout, ByteString}
+import akka.util.{ByteString, Timeout}
 import com.ibm.mqlight.api
 import com.ibm.mqlight.api._
 import com.ibm.mqlight.api.endpoint.Endpoint
@@ -48,7 +48,7 @@ class AmqpAssociationHandle(val localAddress: Address,
                              private val writeable: Semaphore,
                              private val topic: String,
                              private val actor: ActorRef) extends AssociationHandle {
-  import MqLightClient._
+  import org.leachbj.akka.remote.amqp.MqLightClient._
 
   override val readHandlerPromise: Promise[HandleEventListener] = Promise()
 
@@ -71,6 +71,8 @@ class AmqpAssociationHandle(val localAddress: Address,
 case object Disassociate
 
 class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedActorSystem) extends Transport {
+  import org.leachbj.akka.remote.amqp.AmqpTransport._
+
   def this(system: ExtendedActorSystem, conf: Config) = this(new AmqpTransportSettings(conf), system)
 
   implicit val executionContext = system.dispatcher
@@ -83,8 +85,6 @@ class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedAct
   @volatile private var client: ActorRef = _
   @volatile private var localAddress: Address = _
   @volatile private var writeable: Semaphore = _
-
-  def addressName(address: Address) = s"${address.system}@${address.host.get}"
 
   override def shutdown(): Future[Boolean] = ???
 
@@ -102,7 +102,7 @@ class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedAct
       case Success(MqLightStarted(clientId, writeLock)) =>
         localAddress = Address(schemeIdentifier, system.name, clientId.replaceAll("_", "-"), 0)
         writeable = writeLock
-        system.systemActorOf(ListenActor.props(client, writeable, localAddress, listenPromise), s"amqp-transport-listen")
+        system.systemActorOf(ListenActor.props(client, writeable, localAddress, listenPromise), "amqp-transport-listen")
       case Success(_) => listenPromise.failure(new RuntimeException("Unexpected response from mqlight client"))
       case Failure(e) => listenPromise.failure(e)
     }
@@ -113,10 +113,19 @@ class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedAct
   override def associate(remoteAddr: Address): Future[AssociationHandle] = {
     val promise = Promise[AssociationHandle]()
 
-    system.systemActorOf(ClientConnectionActor.props(client, writeable, localAddress, remoteAddr, promise), s"amqp-transport-client-${remoteAddr.host.get}")
+    system.systemActorOf(ClientConnectionActor.props(client, writeable, localAddress, remoteAddr, promise), s"amqp-transport-client-${hostname(remoteAddr)}")
 
     promise.future
   }
+}
+
+object AmqpTransport {
+  def hostname(address: Address) = address.host match {
+    case Some(hostname) => hostname
+    case None => ""
+  }
+
+  def addressName(address: Address) = s"${address.system}@${hostname(address)}"
 }
 
 class MqLightClient extends Actor with ActorLogging with Stash {
@@ -132,10 +141,10 @@ class MqLightClient extends Actor with ActorLogging with Stash {
     case MqLightStart(clientId, url, username, password) =>
       log.debug("creating client to {}", url)
       val client = createClient(clientId, url, username, password)
-      context.become(waitingForStart(clientId, client, sender()))
+      context.become(waitingForStart(client, sender()))
   }
 
-  def waitingForStart(clientId: Option[String], client: NonBlockingClient, notify: ActorRef): Receive = {
+  def waitingForStart(client: NonBlockingClient, notify: ActorRef): Receive = {
     case Started =>
       log.debug("connected to server")
       notify ! MqLightStarted(client.getId, writeable)
@@ -178,12 +187,12 @@ class MqLightClient extends Actor with ActorLogging with Stash {
 
   private def createClient(clientId: Option[String], url: String, username: String, password: String) = {
     val clientOptions = {
-      val opts = ClientOptions.builder().setCredentials("admin", "password")
+      val opts = ClientOptions.builder().setCredentials(username, password)
       clientId.foreach(opts.setId)
       opts.build()
     }
 
-    NonBlockingClient.create(new SingleEndpointService(url, "admin", "password", None.orNull, false),
+    NonBlockingClient.create(new SingleEndpointService(url, username, password, None.orNull, false),
       new ThreadPoolCallbackService(5),
       new NetworkService() {
         override def connect(endpoint: Endpoint, listener: NetworkListener, promise: api.Promise[NetworkChannel]): Unit = {
@@ -192,7 +201,7 @@ class MqLightClient extends Actor with ActorLogging with Stash {
         }
       },
       new TimerServiceImpl,
-      null,
+      None.orNull,
       clientOptions,
       new NonBlockingClientListener[ActorRef] {
         override def onStarted(nonBlockingClient: NonBlockingClient, t: ActorRef): Unit = t ! Started
@@ -221,13 +230,13 @@ object MqLightClient {
   case object Stopped extends MqLightEvent
   case object Drain extends MqLightEvent
 
-  sealed trait MqLightCommands
-  case class MqLightStart(clientId: Option[String], url: String, username: String, password: String)
-  case class MqLightStarted(clientId: String, writeable: Semaphore)
-  case class MqLightSubscribe(topic: String)
-  case class MqLightUnSubscribe(topic: String)
-  case class MqLightSendString(topic: String, body: String)
-  case class MqLightSendBytes(topic: String, body: ByteString)
+  sealed trait MqLightCommand
+  case class MqLightStart(clientId: Option[String], url: String, username: String, password: String) extends MqLightCommand
+  case class MqLightStarted(clientId: String, writeable: Semaphore) extends MqLightCommand
+  case class MqLightSubscribe(topic: String) extends MqLightCommand
+  case class MqLightUnSubscribe(topic: String) extends MqLightCommand
+  case class MqLightSendString(topic: String, body: String) extends MqLightCommand
+  case class MqLightSendBytes(topic: String, body: ByteString) extends MqLightCommand
 }
 
 case class ActorNetworkChannel(actor: ActorRef) extends NetworkChannel {
@@ -317,14 +326,15 @@ class ListenActor(client: ActorRef, writeable: Semaphore, localAddr: Address, pr
   import context.dispatcher
   import org.leachbj.akka.remote.amqp.ActorCompletionListener._
   import org.leachbj.akka.remote.amqp.ActorDestinationListener._
+  import org.leachbj.akka.remote.amqp.AmqpTransport._
   import org.leachbj.akka.remote.amqp.ListenActor._
-  import MqLightClient._
+  import org.leachbj.akka.remote.amqp.MqLightClient._
 
   val localTopic = addressName(localAddr)
 
   override def preStart(): Unit = {
     log.debug("{} subscribing to listen address", localAddr)
-    client ! MqLightSubscribe(s"${localTopic}/+/connect")
+    client ! MqLightSubscribe(s"$localTopic/+/connect")
   }
 
   override def receive: Receive = awaitSubscribe
@@ -368,18 +378,19 @@ class ListenActor(client: ActorRef, writeable: Semaphore, localAddr: Address, pr
 
       log.debug("{} connect request {}", localAddr, remoteAddr)
 
-      context.system.asInstanceOf[ExtendedActorSystem].systemActorOf(ServerConnectionActor.props(client, writeable, localAddr, remoteAddr, eventListener), s"amqp-transport-server-${remoteAddr.host.get}")
+      context.system match {
+        case extended: ExtendedActorSystem =>
+          extended.systemActorOf(ServerConnectionActor.props(client, writeable, localAddr, remoteAddr, eventListener), s"amqp-transport-server-${hostname(remoteAddr)}")
+        case _ =>
+          require(requirement = false, "ExtendedActorSystem required")
+      }
+
 
   }
 
   def parseTopic(deliveryTopic: String) = {
-//    val topic = deliveryTopic.substring(0, deliveryTopic.lastIndexOf('/'))    // strip of the /connect
-//    val remoteIndex = topic.lastIndexOf('/')                                  // after last / is the remote name
-//    val remoteClient = topic.substring(remoteIndex + 1)
-//    val hn(remotesystem, remoteclient) = remoteClient
-
     // topic format is <local systemname/local client>@<remote systemname>/<remote client>/connect
-    val hn(localsystem, localclient, remotesystem, remoteclient) = deliveryTopic
+    val hn(_, _, remotesystem, remoteclient) = deliveryTopic
     (remotesystem, remoteclient)
   }
 
@@ -389,8 +400,6 @@ class ListenActor(client: ActorRef, writeable: Semaphore, localAddr: Address, pr
 object ListenActor {
   def props(client: ActorRef, writeable: Semaphore, localAddr: Address, promise: Promise[(Address, Promise[AssociationEventListener])]) = Props(classOf[ListenActor], client, writeable, localAddr, promise)
 
-  def addressName(address: Address) = s"${address.system}@${address.host.get}"
-
   case class ListenAssociated(eventListener: AssociationEventListener)
 }
 
@@ -398,14 +407,16 @@ class ServerConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
   import context.dispatcher
   import org.leachbj.akka.remote.amqp.ActorCompletionListener._
   import org.leachbj.akka.remote.amqp.ActorDestinationListener._
+  import org.leachbj.akka.remote.amqp.AmqpTransport._
+  import org.leachbj.akka.remote.amqp.MqLightClient._
   import org.leachbj.akka.remote.amqp.ServerConnectionActor._
-  import MqLightClient._
+
   import scala.concurrent.duration._
 
   val localTopic = s"${addressName(localAddr)}/${addressName(remoteAddr)}"
   val remoteTopic = s"${addressName(remoteAddr)}/${addressName(localAddr)}"
 
-  override def preStart(): Unit = client ! MqLightSubscribe(s"${localTopic}/server/+")
+  override def preStart(): Unit = client ! MqLightSubscribe(s"$localTopic/server/+")
 
   override def receive: Receive = waitForSubscribed
 
@@ -413,7 +424,7 @@ class ServerConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
     case CompletionSuccess =>
       sendSynAck()
 
-      val handle = new AmqpAssociationHandle(localAddr, remoteAddr, client, writeable, s"${remoteTopic}/client", self)
+      val handle = new AmqpAssociationHandle(localAddr, remoteAddr, client, writeable, s"$remoteTopic/client", self)
       eventListener.notify(InboundAssociation(handle))
 
       handle.readHandlerPromise.future.onSuccess {
@@ -450,7 +461,7 @@ class ServerConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
     case Disassociate =>
       log.debug("{} disassociate", localAddr)
       client ! MqLightSendString(s"$remoteTopic/client/disassociate", "disassociate")
-      val timeout = context.system.scheduler.scheduleOnce(500 milliseconds, self, DisconnectTimeout)
+      val timeout = context.system.scheduler.scheduleOnce(500.milliseconds, self, DisconnectTimeout)
       context.become(startedDisconnecting(timeout))
   }
 
@@ -480,14 +491,12 @@ class ServerConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
 
   def sendSynAck() = {
     log.debug("{} sending synack to {}", localAddr, remoteAddr)
-    client ! MqLightSendString(s"${remoteTopic}/client/synack", "synack")
+    client ! MqLightSendString(s"$remoteTopic/client/synack", "synack")
   }
 }
 
 object ServerConnectionActor {
   def props(client: ActorRef, writeable: Semaphore, localAddr: Address, remoteAddr: Address, eventListener: AssociationEventListener) = Props(classOf[ServerConnectionActor], client, writeable, localAddr, remoteAddr, eventListener)
-
-  def addressName(address: Address) = s"${address.system}@${address.host.get}"
 
   case class ListenAssociated(listener: HandleEventListener)
   case object DisconnectTimeout
@@ -498,8 +507,10 @@ class ClientConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
   import context.dispatcher
   import org.leachbj.akka.remote.amqp.ActorCompletionListener._
   import org.leachbj.akka.remote.amqp.ActorDestinationListener._
+  import org.leachbj.akka.remote.amqp.AmqpTransport._
   import org.leachbj.akka.remote.amqp.ClientConnectionActor._
-  import MqLightClient._
+  import org.leachbj.akka.remote.amqp.MqLightClient._
+
   import scala.concurrent.duration._
 
   val localTopic = s"${addressName(localAddr)}/${addressName(remoteAddr)}"
@@ -525,7 +536,7 @@ class ClientConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
       retry.cancel()
       log.debug("{} received synack from {}", localAddr, remoteAddr)
 
-      val handle = new AmqpAssociationHandle(localAddr, remoteAddr, client, writeable, s"${remoteTopic}/server", self)
+      val handle = new AmqpAssociationHandle(localAddr, remoteAddr, client, writeable, s"$remoteTopic/server", self)
       handle.readHandlerPromise.future.onSuccess {
         case listener: HandleEventListener =>
           self ! ReadHandleSuccess(listener)
@@ -553,7 +564,7 @@ class ClientConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
     case Disassociate =>
       log.debug("{} disassociate", localAddr)
       client ! MqLightSendString(s"$remoteTopic/client/disassociate", "disassociate")
-      val timeout = context.system.scheduler.scheduleOnce(500 milliseconds, self, DisconnectTimeout)
+      val timeout = context.system.scheduler.scheduleOnce(500.milliseconds, self, DisconnectTimeout)
       context.become(startedDisconnecting(timeout))
   }
 
@@ -590,8 +601,6 @@ class ClientConnectionActor(client: ActorRef, writeable: Semaphore, localAddr: A
 object ClientConnectionActor {
   def props(client: ActorRef, writeable: Semaphore, localAddr: Address, remoteAddr: Address, promise: Promise[AssociationHandle]) =
     Props(classOf[ClientConnectionActor], client, writeable, localAddr, remoteAddr, promise)
-
-  def addressName(address: Address) = s"${address.system}@${address.host.get}"
 
   case object RetryConnect
   case class ReadHandleSuccess(listener: HandleEventListener)
