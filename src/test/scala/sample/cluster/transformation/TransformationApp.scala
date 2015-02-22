@@ -9,8 +9,8 @@ object TransformationApp {
     TransformationFrontend.main(Seq("seed1").toArray)
     TransformationBackend.main(Seq("seed2").toArray)
     TransformationBackend.main(Array.empty)
-//    TransformationBackend.main(Array.empty)
-//    TransformationBackend.main(Array.empty)
+    TransformationBackend.main(Array.empty)
+    TransformationBackend.main(Array.empty)
     TransformationFrontend.main(Array.empty)
   }
 }
