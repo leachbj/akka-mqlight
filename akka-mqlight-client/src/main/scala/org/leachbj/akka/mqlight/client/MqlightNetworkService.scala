@@ -19,7 +19,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-package org.leachbj.akka.remote.amqp
+package org.leachbj.akka.mqlight.client
 
 import java.io.IOException
 import java.lang
@@ -36,7 +36,7 @@ import com.ibm.mqlight.api.network.{NetworkChannel, NetworkListener}
 
 class MqlightNetworkService extends Actor with ActorLogging {
 
-  import org.leachbj.akka.remote.amqp.MqlightNetworkService._
+  import org.leachbj.akka.mqlight.client.MqlightNetworkService._
 
   override def receive = {
     case MqLightConnect(endpoint, listener, promise) =>
@@ -53,7 +53,7 @@ object MqlightNetworkService {
 
 case class ActorNetworkChannel(actor: ActorRef) extends NetworkChannel {
 
-  import org.leachbj.akka.remote.amqp.MqlightConnector._
+  import org.leachbj.akka.mqlight.client.MqlightConnector._
 
   var context: AnyRef = _
 
@@ -73,7 +73,7 @@ case class ActorNetworkChannel(actor: ActorRef) extends NetworkChannel {
 class MqlightConnector(endpoint: Endpoint, listener: NetworkListener, connectPromise: api.Promise[NetworkChannel]) extends Actor with ActorLogging {
 
   import context.system
-  import org.leachbj.akka.remote.amqp.MqlightConnector._
+  import org.leachbj.akka.mqlight.client.MqlightConnector._
 
   override def preStart(): Unit = IO(Tcp) ! Tcp.Connect(new InetSocketAddress(endpoint.getHost, endpoint.getPort))
 

@@ -19,24 +19,25 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-package org.leachbj.akka.remote.amqp
+package org.leachbj.akka.mqlight.remote
 
 import akka.actor._
 import akka.pattern.{ask, pipe}
 import akka.remote.transport.Transport.AssociationEventListener
 import akka.util.Timeout
 import com.ibm.mqlight.api.{MalformedDelivery, StringDelivery}
-import org.leachbj.akka.remote.amqp.ActorCompletionListener.{CompletionError, CompletionSuccess}
-import org.leachbj.akka.remote.amqp.ActorDestinationListener._
-import org.leachbj.akka.remote.amqp.MqLightClient._
+import org.leachbj.akka.mqlight.client.ActorCompletionListener.{CompletionError, CompletionSuccess}
+import org.leachbj.akka.mqlight.client.ActorDestinationListener._
+import org.leachbj.akka.mqlight.client.MqLightClient
+import org.leachbj.akka.mqlight.client.MqLightClient._
 
 import scala.concurrent.{Future, Promise}
 
 class ListenServiceActor(settings: AmqpTransportSettings) extends Actor with ActorLogging with Stash {
 
   import context.dispatcher
-  import org.leachbj.akka.remote.amqp.AmqpTransport._
-  import org.leachbj.akka.remote.amqp.ListenServiceActor._
+  import org.leachbj.akka.mqlight.remote.AmqpTransport._
+  import org.leachbj.akka.mqlight.remote.ListenServiceActor._
 
   implicit val timeout = Timeout(settings.ConnectTimeout)
 

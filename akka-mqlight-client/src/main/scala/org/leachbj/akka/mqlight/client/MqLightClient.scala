@@ -19,7 +19,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-package org.leachbj.akka.remote.amqp
+package org.leachbj.akka.mqlight.client
 
 import akka.actor._
 import akka.util.ByteString
@@ -30,12 +30,12 @@ import com.ibm.mqlight.api.impl.callback.ThreadPoolCallbackService
 import com.ibm.mqlight.api.impl.endpoint.SingleEndpointService
 import com.ibm.mqlight.api.impl.timer.TimerServiceImpl
 import com.ibm.mqlight.api.network.{NetworkChannel, NetworkListener, NetworkService}
-import org.leachbj.akka.remote.amqp.ActorCompletionListener.{CompletionError, CompletionSuccess}
-import org.leachbj.akka.remote.amqp.MqlightNetworkService.MqLightConnect
+import org.leachbj.akka.mqlight.client.ActorCompletionListener.{CompletionError, CompletionSuccess}
+import org.leachbj.akka.mqlight.client.MqlightNetworkService.MqLightConnect
 
 class MqLightClient(listener: Option[ActorRef]) extends Actor with ActorLogging with Stash {
 
-  import org.leachbj.akka.remote.amqp.MqLightClient._
+  import org.leachbj.akka.mqlight.client.MqLightClient._
 
   val network = context.system.actorOf(Props[MqlightNetworkService])
 

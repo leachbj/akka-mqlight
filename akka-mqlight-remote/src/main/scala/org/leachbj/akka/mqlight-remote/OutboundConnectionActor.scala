@@ -6,24 +6,25 @@
  * of it without the prior written consent of Monitise Group Limited.
  * Any reproduction of this material must contain this notice.
  */
-package org.leachbj.akka.remote.amqp
+package org.leachbj.akka.mqlight.remote
 
 import akka.actor._
 import akka.remote.transport.AssociationHandle
 import akka.remote.transport.AssociationHandle.{Disassociated, HandleEventListener, InboundPayload}
 import akka.util.ByteString
 import com.ibm.mqlight.api.{BytesDelivery, StringDelivery}
+import org.leachbj.akka.mqlight.client.MqLightClient
 
 import scala.concurrent.Promise
 
 class OutboundConnectionActor(localAddr: Address, remoteAddr: Address, promise: Promise[AssociationHandle]) extends Actor with ActorLogging {
 
   import context.dispatcher
-  import org.leachbj.akka.remote.amqp.ActorCompletionListener._
-  import org.leachbj.akka.remote.amqp.ActorDestinationListener._
-  import org.leachbj.akka.remote.amqp.AmqpTransport._
-  import org.leachbj.akka.remote.amqp.MqLightClient._
-  import org.leachbj.akka.remote.amqp.OutboundConnectionActor._
+  import org.leachbj.akka.mqlight.client.ActorCompletionListener._
+  import org.leachbj.akka.mqlight.client.ActorDestinationListener._
+  import org.leachbj.akka.mqlight.remote.AmqpTransport._
+  import org.leachbj.akka.mqlight.client.MqLightClient._
+  import org.leachbj.akka.mqlight.remote.OutboundConnectionActor._
 
   import scala.concurrent.duration._
 

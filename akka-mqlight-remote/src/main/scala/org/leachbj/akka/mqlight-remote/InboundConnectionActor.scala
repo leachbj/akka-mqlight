@@ -19,7 +19,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-package org.leachbj.akka.remote.amqp
+package org.leachbj.akka.mqlight.remote
 
 import akka.actor._
 import akka.remote.transport.AssociationHandle
@@ -27,15 +27,16 @@ import akka.remote.transport.AssociationHandle.{Disassociated, HandleEventListen
 import akka.remote.transport.Transport.{AssociationEventListener, InboundAssociation}
 import akka.util.ByteString
 import com.ibm.mqlight.api.{BytesDelivery, MalformedDelivery, StringDelivery}
+import org.leachbj.akka.mqlight.client.MqLightClient
 
 class InboundConnectionActor(localAddr: Address, remoteAddr: Address, eventListener: AssociationEventListener) extends Actor with Stash with ActorLogging {
 
   import context.dispatcher
-  import org.leachbj.akka.remote.amqp.ActorCompletionListener._
-  import org.leachbj.akka.remote.amqp.ActorDestinationListener._
-  import org.leachbj.akka.remote.amqp.AmqpTransport._
-  import org.leachbj.akka.remote.amqp.InboundConnectionActor._
-  import org.leachbj.akka.remote.amqp.MqLightClient._
+  import org.leachbj.akka.mqlight.client.ActorCompletionListener._
+  import org.leachbj.akka.mqlight.client.ActorDestinationListener._
+  import org.leachbj.akka.mqlight.remote.AmqpTransport._
+  import org.leachbj.akka.mqlight.remote.InboundConnectionActor._
+  import org.leachbj.akka.mqlight.client.MqLightClient._
 
   import scala.concurrent.duration._
 

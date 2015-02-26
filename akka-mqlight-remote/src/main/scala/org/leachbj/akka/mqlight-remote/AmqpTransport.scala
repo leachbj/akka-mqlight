@@ -19,7 +19,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-package org.leachbj.akka.remote.amqp
+package org.leachbj.akka.mqlight.remote
 
 import java.util.concurrent.TimeUnit
 
@@ -58,8 +58,8 @@ class AmqpTransportSettings(config: Config) {
 
 class AmqpTransport(val settings: AmqpTransportSettings, val system: ExtendedActorSystem) extends Transport {
 
-  import org.leachbj.akka.remote.amqp.AmqpTransport._
-  import org.leachbj.akka.remote.amqp.ListenServiceActor._
+  import org.leachbj.akka.mqlight.remote.AmqpTransport._
+  import org.leachbj.akka.mqlight.remote.ListenServiceActor._
 
   def this(system: ExtendedActorSystem, conf: Config) = this(new AmqpTransportSettings(conf), system)
 
@@ -123,7 +123,7 @@ class AmqpAssociationHandle(val localAddress: Address,
                             private val topic: String,
                             private val connection: ActorRef) extends AssociationHandle {
 
-  import org.leachbj.akka.remote.amqp.MqLightClient._
+  import org.leachbj.akka.mqlight.client.MqLightClient._
 
   @volatile var available = true
 
