@@ -22,7 +22,7 @@
 			<dependency>
 				<groupId>com.ibm.mqlight.api</groupId>
 				<artifactId>mqlight-api</artifactId>
-				<version>1.0-2015021900</version>
+				<version>1.0.2015021901-SNAPSHOT</version>
 				<exclusions>
 					<exclusion>
 						<groupId>ch.qos.logback</groupId>
