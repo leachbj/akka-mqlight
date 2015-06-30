@@ -33,6 +33,7 @@ import akka.util.ByteString
 import com.ibm.mqlight.api
 import com.ibm.mqlight.api.endpoint.Endpoint
 import com.ibm.mqlight.api.network.{NetworkChannel, NetworkListener}
+import io.netty.buffer.Unpooled
 
 class MqlightNetworkService extends Actor with ActorLogging {
 
@@ -91,7 +92,7 @@ class MqlightConnector(endpoint: Endpoint, listener: NetworkListener, connectPro
 
   def connected(channel: ActorNetworkChannel, connection: ActorRef): Receive = {
     case Tcp.Received(buffer) =>
-      listener.onRead(channel, buffer.asByteBuffer)
+      listener.onRead(channel, Unpooled.wrappedBuffer(buffer.asByteBuffer))
 
     case Tcp.PeerClosed | Tcp.ErrorClosed =>
       listener.onClose(channel)

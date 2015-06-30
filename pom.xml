@@ -20,9 +20,9 @@
 	<dependencyManagement>
 		<dependencies>
 			<dependency>
-				<groupId>com.ibm.mqlight.api</groupId>
+				<groupId>com.ibm.mqlight</groupId>
 				<artifactId>mqlight-api</artifactId>
-				<version>1.0.2015021901-SNAPSHOT</version>
+				<version>1.0.2015060300</version>
 				<exclusions>
 					<exclusion>
 						<groupId>ch.qos.logback</groupId>

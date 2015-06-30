@@ -10,7 +10,7 @@
 	<name>akka-mqlight-client</name>
 	<dependencies>
 		<dependency>
-			<groupId>com.ibm.mqlight.api</groupId>
+			<groupId>com.ibm.mqlight</groupId>
 			<artifactId>mqlight-api</artifactId>
 		</dependency>
 		<dependency>

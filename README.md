@@ -1,7 +1,7 @@
 [akka-mqlight](http://github.com/leachbj/akka-mqlight) provides two APIs;
 
 * akka-mqlight-client is a simple wrapper for the java
- [mqlight-api](https://github.com/dnwe/qpid-proton/tree/contrib-mqlight-java%20) library which
+ [java-mqlight](https://github.com/mqlight/java-mqlight) library which
  is an AMQP1.0 client suitable for java clients accessing IBM's [MQ Light](https://developer.ibm.com/messaging/mq-light/).
 
 * akka-mqlight-remote is an implementation of the Akka remote
@@ -14,15 +14,6 @@
 idea in the first place!
 
 ## Getting Started
-
-To build the library firstly install the mqlight-api library in your local maven repository.  At
-this point this library is early access and so not available from maven central.
-
-Download [mqlight-api-1.0.2015021901-SNAPSHOT-all.zip](http://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqkoa/mqlight-api-1.0.2015021901-SNAPSHOT-all.zip)
-
-After extracting the files from the archive use the following command to install locally;
-
-    mvn install:install-file -Dfile=mqlight-api-1.0.2015021901-SNAPSHOT.jar -DpomFile=pom.xml
 
 You should then be able to build the library with a simple `mvn install`.
 
