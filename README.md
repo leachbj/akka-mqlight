@@ -1,4 +1,4 @@
-[akka-mqlight](http://github.com/leachbj/akka-mqlight) provides two APIs;
+[akka-mqlight](http://github.com/leachbj/akka-mqlight) provides the following APIs;
 
 * akka-mqlight-client is a simple wrapper for the java
  [java-mqlight](https://github.com/mqlight/java-mqlight) library which
@@ -9,6 +9,9 @@
   interface.  This implementation is a drop-in replacement(*) for the existing TCP/UCP based Transport
   implementations and lets you use Akka remoting via an the MQ Light message broker.  This could be
   used in cases where direct network connections are not possible for instance in a PAAS type environment.
+
+* akka-mqlight-streams is a [Reactive Streams](http://www.reactive-streams.org/) driver for AMQP using
+  the [java-mqlight](https://github.com/mqlight/java-mqlight) API.
 
 (*) This is very much a case of 'in theory', there's still the question of if this is even a good
 idea in the first place!
@@ -22,6 +25,9 @@ sample from Typesafe (see [transformation](https://github.com/akka/akka/tree/mas
 
 After starting a local MQ Light instance you can start the `TransformationApp` by running
 `mvn exec:exec` in the `akka-mqlight-remote` directory.
+
+For a streams example take a look at `MqLighStreamsSample` in the test directory of the
+`akka-mqlight-stream` module.
 
 ## Contributing
 
