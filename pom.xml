@@ -10,13 +10,14 @@
 		<module>akka-mqlight-client</module>
 		<module>akka-mqlight-remote</module>
 		<module>akka-mqlight-streams</module>
+		<module>akka-mqlight-plug-points</module>
 	</modules>
 	<properties>
 		<akka.version>2.3.11</akka.version>
 		<maven.plugin.scala.version>3.2.0</maven.plugin.scala.version>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 		<scala.major.version>2.11</scala.major.version>
-		<scala.version>${scala.major.version}.5</scala.version>
+		<scala.version>${scala.major.version}.7</scala.version>
 	</properties>
 	<dependencyManagement>
 		<dependencies>
