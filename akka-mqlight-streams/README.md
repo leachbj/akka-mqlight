@@ -14,32 +14,34 @@ to the MqLight `Sink` and then consume 5 messages from the MqLight
 *Note* the MqLight client is hard-coded to connect to a local broker
 with fixed credentials.
 
-    import akka.actor.{ActorRef, ActorSystem}
-    import akka.stream.ActorMaterializer
-    import akka.stream.scaladsl.{Sink, Source}
-    import org.leachbj.akka.mqlight.streams.{MqLight, MqLightMessage}
+```scala
+import akka.actor.{ActorRef, ActorSystem}
+import akka.stream.ActorMaterializer
+import akka.stream.scaladsl.{Sink, Source}
+import org.leachbj.akka.mqlight.streams.{MqLight, MqLightMessage}
 
-    import scala.concurrent.Future
+import scala.concurrent.Future
 
-    object MqLightStreamsSample extends App {
-      implicit val sys = ActorSystem("MqLighStreamsSample")
-      implicit val mat = ActorMaterializer()
-      implicit val dispatcher = sys.dispatcher
+object MqLightStreamsSample extends App {
+  implicit val sys = ActorSystem("MqLighStreamsSample")
+  implicit val mat = ActorMaterializer()
+  implicit val dispatcher = sys.dispatcher
 
-      val consumer: Source[MqLightMessage, ActorRef] = MqLight().consumer("test-topic")
-      val producer: Sink[MqLightMessage, ActorRef] = MqLight().publisher()
+  val consumer: Source[MqLightMessage, ActorRef] = MqLight().consumer("test-topic")
+  val producer: Sink[MqLightMessage, ActorRef] = MqLight().publisher()
 
-      // consume 5 messages from test-topic and print them out
-      val consumed: Future[Unit] = consumer.take(5).runForeach(println)
+  // consume 5 messages from test-topic and print them out
+  val consumed: Future[Unit] = consumer.take(5).runForeach(println)
 
-      // generate 5 messages and send them to the test-topic
-      val produced: ActorRef = Source(0 to 5).map(x => MqLightMessage(s"message $x", "test-topic", Map.empty)).runWith(producer)
+  // generate 5 messages and send them to the test-topic
+  val produced: ActorRef = Source(0 to 5).map(x => MqLightMessage(s"message $x", "test-topic", Map.empty)).runWith(producer)
 
-      consumed.onComplete {
-        case _ =>
-          sys.shutdown()
-      }
-    }
+  consumed.onComplete {
+    case _ =>
+      sys.shutdown()
+  }
+}
+```
 
 ## License
 
